@@ -1,6 +1,6 @@
-./checkpoint
-./dataset
-./dataset_generation
-./mask_results
-.//sample
-./architecture.png
+checkpoint/
+dataset/
+dataset_generation/
+mask_results/
+sample/
+SE/

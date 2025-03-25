@@ -15,7 +15,7 @@ pscc_args.val_num = 200
 
 pscc_args.save_tag = False
 
-pscc_args.train_bs = 5
+pscc_args.train_bs = 12
 pscc_args.val_bs = 1
 pscc_args.train_num = 100000
 # authentic, splice, copymove, removal

@@ -86,8 +86,7 @@ def test(args):
 
     pred_tag = 'forged' if binary_cls.item() == 1 else 'authentic'
 
-    if args.save_tag:
-        save_image(pred_mask, name, 'mask')
+    save_image(pred_mask, name, 'mask')
 
     print_name = name[0].split('/')[-1].split('.')[0]
 
