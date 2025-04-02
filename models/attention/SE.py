@@ -26,7 +26,7 @@ class SE(nn.Module):
     # get mask
     mask = torch.sigmoid(self.getmask(result.clone()))
     
-    return mask, result
+    return mask
 
 
 if __name__ == '__main__':

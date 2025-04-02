@@ -3,20 +3,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+import logging
 
 from utils.utils import findLastCheckpoint, save_image, adjust_learning_rate
 from utils.config import get_pscc_args
-from utils.load_tdata import TrainData
-from utils.load_tdata import ValData
-
+from utils.load_tdata import TrainData, ValData
 from models.seg_hrnet import get_seg_model
 from models.seg_hrnet_config import get_hrnet_cfg
 from models.NLCDetection import NLCDetection
 from models.detection_head import DetectionHead
 
 # 使用所有可用的GPU
-device_ids = list(range(torch.cuda.device_count()))
-device = torch.device('cuda:0')
+# device_ids = list(range(torch.cuda.device_count()))
+device_ids = [1]
+device = torch.device('cuda:1')
+
+# 设置日志记录
+logging.basicConfig(filename='training.log', level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 def train(args):
     # define backbone
@@ -51,129 +55,126 @@ def train(args):
     params = list(FENet.parameters()) + list(SegNet.parameters()) + list(ClsNet.parameters())
     optimizer = torch.optim.Adam(params, lr=args['learning_rate'])
 
+    # 创建checkpoint目录
     FENet_dir = './checkpoint/{}_checkpoint'.format(FENet_name)
     if not os.path.exists(FENet_dir):
         os.mkdir(FENet_dir)
-
     SegNet_dir = './checkpoint/{}_checkpoint'.format(SegNet_name)
     if not os.path.exists(SegNet_dir):
         os.mkdir(SegNet_dir)
-
     ClsNet_dir = './checkpoint/{}_checkpoint'.format(ClsNet_name)
     if not os.path.exists(ClsNet_dir):
         os.mkdir(ClsNet_dir)
 
-    # load FENet weight
+    # load pretrained weights if available
     try:
         FENet_weight_path = '{}/{}.pth'.format(FENet_dir, FENet_name)
         FENet_state_dict = torch.load(FENet_weight_path, map_location='cuda:0')
         FENet.load_state_dict(FENet_state_dict)
-        print('{} weight-loading succeeds: {}'.format(FENet_name, FENet_weight_path))
+        logging.info('{} weight-loading succeeds: {}'.format(FENet_name, FENet_weight_path))
     except Exception as e:
-        print('{} weight-loading fails: {}'.format(FENet_name, e))
-
-    # load SegNet weight
+        logging.info('{} weight-loading fails: {}'.format(FENet_name, e))
     try:
         SegNet_weight_path = '{}/{}.pth'.format(SegNet_dir, SegNet_name)
         SegNet_state_dict = torch.load(SegNet_weight_path, map_location='cuda:0')
         SegNet.load_state_dict(SegNet_state_dict)
-        print('{} weight-loading succeeds: {}'.format(SegNet_name, SegNet_weight_path))
+        logging.info('{} weight-loading succeeds: {}'.format(SegNet_name, SegNet_weight_path))
     except Exception as e:
-        print('{} weight-loading fails: {}'.format(SegNet_name, e))
-
-    # load ClsNet weight
+        logging.info('{} weight-loading fails: {}'.format(SegNet_name, e))
     try:
         ClsNet_weight_path = '{}/{}.pth'.format(ClsNet_dir, ClsNet_name)
         ClsNet_state_dict = torch.load(ClsNet_weight_path, map_location='cuda:0')
         ClsNet.load_state_dict(ClsNet_state_dict)
-        print('{} weight-loading succeeds: {}'.format(ClsNet_name, ClsNet_weight_path))
+        logging.info('{} weight-loading succeeds: {}'.format(ClsNet_name, ClsNet_weight_path))
     except Exception as e:
-        print('{} weight-loading fails: {}'.format(ClsNet_name, e))
+        logging.info('{} weight-loading fails: {}'.format(ClsNet_name, e))
 
-    # validation
-    print('length of traindata: {}'.format(len(train_data_loader)))
+    # 先进行一次验证，得到初始score
+    logging.info('length of traindata: {}'.format(len(train_data_loader)))
     previous_score = validation(FENet, SegNet, ClsNet, args)
-    print('previous_score {0:.4f}'.format(previous_score))
+    logging.info('previous_score {0:.4f}'.format(previous_score))
 
-    # cross entropy loss
+    # cross entropy loss（分类任务）
     authentic_ratio = args['train_ratio'][0]
     fake_ratio = 1 - authentic_ratio
-    print('authentic_ratio: {}'.format(authentic_ratio), 'fake_ratio: {}'.format(fake_ratio))
+    logging.info('authentic_ratio: {}  fake_ratio: {}'.format(authentic_ratio, fake_ratio))
     weights = [1. / authentic_ratio, 1. / fake_ratio]
     weights = torch.tensor(weights).to(device)
     CE_loss = nn.CrossEntropyLoss(weight=weights).to(device)
 
+    # BCE loss for segmentation
     BCE_loss_full = nn.BCELoss(reduction='none').to(device)
 
     # 断点续训
     initial_epoch = findLastCheckpoint(save_dir=SegNet_dir)
     if initial_epoch > 0:
         try:
-            FENet_checkpoint = torch.load(
-                '{0}/{1}_{2}.pth'.format(FENet_dir, FENet_name, initial_epoch))
+            FENet_checkpoint = torch.load('{0}/{1}_{2}.pth'.format(FENet_dir, FENet_name, initial_epoch))
             FENet.load_state_dict(FENet_checkpoint['model'])
-            print("resuming FENet by loading epoch {}".format(initial_epoch))
+            logging.info("resuming FENet by loading epoch {}".format(initial_epoch))
 
-            SegNet_checkpoint = torch.load(
-                '{0}/{1}_{2}.pth'.format(SegNet_dir, SegNet_name, initial_epoch))
+            SegNet_checkpoint = torch.load('{0}/{1}_{2}.pth'.format(SegNet_dir, SegNet_name, initial_epoch))
             SegNet.load_state_dict(SegNet_checkpoint['model'])
-            print("resuming SegNet by loading epoch {}".format(initial_epoch))
+            logging.info("resuming SegNet by loading epoch {}".format(initial_epoch))
 
-            ClsNet_checkpoint = torch.load(
-                '{0}/{1}_{2}.pth'.format(ClsNet_dir, ClsNet_name, initial_epoch))
+            ClsNet_checkpoint = torch.load('{0}/{1}_{2}.pth'.format(ClsNet_dir, ClsNet_name, initial_epoch))
             ClsNet.load_state_dict(ClsNet_checkpoint['model'])
             optimizer.load_state_dict(ClsNet_checkpoint['optimizer'])
-            print("resuming ClsNet by loading epoch {}".format(initial_epoch))
+            logging.info("resuming ClsNet by loading epoch {}".format(initial_epoch))
         except Exception as e:
-            print('cannot load checkpoint on epoch {}: {}'.format(initial_epoch, e))
+            logging.info('cannot load checkpoint on epoch {}: {}'.format(initial_epoch, e))
             initial_epoch = 0
-            print("resuming by loading epoch {}".format(initial_epoch))
+            logging.info("resuming by loading epoch {}".format(initial_epoch))
+
+    # 用于保存训练过程数据
+    epoch_list = []
+    loss_list = []
+    score_list = []
 
     for epoch in range(initial_epoch, args['num_epochs']):
         adjust_learning_rate(optimizer, epoch, args['lr_strategy'], args['lr_decay_step'])
-        seg_total, seg_correct, seg_loss_sum = [0] * 3
-        cls_total, cls_correct, cls_loss_sum = [0] * 3
+        seg_total, seg_correct, seg_loss_sum = 0, 0, 0
+        cls_total, cls_correct, cls_loss_sum = 0, 0, 0
 
         for batch_id, train_data in enumerate(train_data_loader):
             # image, [mask, mask2, mask3, mask4], cls
             image, masks, cls = train_data
             cls[cls != 0] = 1  # 只要不是origin, 不区分fake种类
-
             mask1, mask2, mask3, mask4 = masks
 
-            # median-frequency class weighting
+            # median-frequency class weighting for segmentation masks
             mask1_balance = torch.ones_like(mask1)
             if (mask1 == 1).sum():
-                mask1_balance[mask1 == 1] = 0.5 / ((mask1 == 1).sum().to(torch.float) / mask1.numel())
-                mask1_balance[mask1 == 0] = 0.5 / ((mask1 == 0).sum().to(torch.float) / mask1.numel())
+                mask1_balance[mask1 == 1] = 0.5 / ((mask1 == 1).sum().float() / mask1.numel())
+                mask1_balance[mask1 == 0] = 0.5 / ((mask1 == 0).sum().float() / mask1.numel())
             else:
-                print('Mask1 balance is not working!')
-
+                logging.info('Mask1 balance is not working!')
             mask2_balance = torch.ones_like(mask2)
             if (mask2 == 1).sum():
-                mask2_balance[mask2 == 1] = 0.5 / ((mask2 == 1).sum().to(torch.float) / mask2.numel())
-                mask2_balance[mask2 == 0] = 0.5 / ((mask2 == 0).sum().to(torch.float) / mask2.numel())
+                mask2_balance[mask2 == 1] = 0.5 / ((mask2 == 1).sum().float() / mask2.numel())
+                mask2_balance[mask2 == 0] = 0.5 / ((mask2 == 0).sum().float() / mask2.numel())
             else:
-                print('Mask2 balance is not working!')
-
+                logging.info('Mask2 balance is not working!')
             mask3_balance = torch.ones_like(mask3)
             if (mask3 == 1).sum():
-                mask3_balance[mask3 == 1] = 0.5 / ((mask3 == 1).sum().to(torch.float) / mask3.numel())
-                mask3_balance[mask3 == 0] = 0.5 / ((mask3 == 0).sum().to(torch.float) / mask3.numel())
+                mask3_balance[mask3 == 1] = 0.5 / ((mask3 == 1).sum().float() / mask3.numel())
+                mask3_balance[mask3 == 0] = 0.5 / ((mask3 == 0).sum().float() / mask3.numel())
             else:
-                print('Mask3 balance is not working!')
-
+                logging.info('Mask3 balance is not working!')
             mask4_balance = torch.ones_like(mask4)
             if (mask4 == 1).sum():
-                mask4_balance[mask4 == 1] = 0.5 / ((mask4 == 1).sum().to(torch.float) / mask4.numel())
-                mask4_balance[mask4 == 0] = 0.5 / ((mask4 == 0).sum().to(torch.float) / mask4.numel())
+                mask4_balance[mask4 == 1] = 0.5 / ((mask4 == 1).sum().float() / mask4.numel())
+                mask4_balance[mask4 == 0] = 0.5 / ((mask4 == 0).sum().float() / mask4.numel())
             else:
-                print('Mask4 balance is not working!')
+                logging.info('Mask4 balance is not working!')
 
+            # 移动数据到GPU
             image = image.to(device)
             mask1, mask2, mask3, mask4 = mask1.to(device), mask2.to(device), mask3.to(device), mask4.to(device)
-            mask1_balance, mask2_balance, mask3_balance, mask4_balance = \
-                mask1_balance.to(device), mask2_balance.to(device), mask3_balance.to(device), mask4_balance.to(device)
+            mask1_balance = mask1_balance.to(device)
+            mask2_balance = mask2_balance.to(device)
+            mask3_balance = mask3_balance.to(device)
+            mask4_balance = mask4_balance.to(device)
             cls = cls.to(device)
 
             optimizer.zero_grad()
@@ -190,6 +191,7 @@ def train(args):
             ClsNet.train()
             pred_logit = ClsNet(feat)
 
+            # squeeze channel dimension
             pred_mask1 = pred_mask1.squeeze(dim=1)
             pred_mask2 = pred_mask2.squeeze(dim=1)
             pred_mask3 = pred_mask3.squeeze(dim=1)
@@ -207,7 +209,7 @@ def train(args):
             loss.backward()
             optimizer.step()
 
-            # localization
+            # localization accuracy
             binary_mask1 = torch.zeros_like(pred_mask1)
             binary_mask1[pred_mask1 > 0.5] = 1
             binary_mask1[pred_mask1 <= 0.5] = 0
@@ -223,44 +225,51 @@ def train(args):
             cls_loss_sum += cls_loss.item()
 
             if batch_id % 10 == 9:
-                print('[{0}, {1}] batch_loc_acc: [{2}/{3}] {4:.2f}, seg_loss: {5:.4f}; '
-                      'batch_cls_acc: [{6}/{7}] {8:.2f}, cls_loss: {9:.4f}'.format(
-                          epoch, batch_id + 1, seg_correct, seg_total,
-                          seg_correct / seg_total * 100, seg_loss_sum / 100,
-                          cls_correct, cls_total, cls_correct / cls_total * 100,
-                          cls_loss_sum / 100))
-                seg_total, seg_correct, seg_loss_sum, cls_total, cls_correct, cls_loss_sum = [0] * 6
+                logging.info('[Epoch {0}, Batch {1}] Localization Accuracy: [{2}/{3}] {4:.2f}%, seg_loss: {5:.4f}; '
+                             'Classification Accuracy: [{6}/{7}] {8:.2f}%, cls_loss: {9:.4f}'.format(
+                                epoch + 1, batch_id + 1, seg_correct, seg_total,
+                                seg_correct / seg_total * 100,
+                                seg_loss_sum / 10, cls_correct, cls_total,
+                                cls_correct / cls_total * 100,
+                                cls_loss_sum / 10))
+                seg_total, seg_correct, seg_loss_sum, cls_total, cls_correct, cls_loss_sum = 0, 0, 0, 0, 0, 0
 
         # 每个epoch保存一次权重
-        if epoch % 1 == 0:
-            FENet_checkpoint = {'model': FENet.state_dict(), 'optimizer': optimizer.state_dict()}
-            torch.save(FENet_checkpoint, '{0}/{1}_{2}.pth'.format(FENet_dir, FENet_name, epoch + 1))
+        checkpoint = {
+            'epoch': epoch + 1,
+            'FENet': FENet.state_dict(),
+            'SegNet': SegNet.state_dict(),
+            'ClsNet': ClsNet.state_dict(),
+            'optimizer': optimizer.state_dict()
+        }
+        torch.save(checkpoint, '{0}/{1}_{2}.pth'.format(FENet_dir, FENet_name, epoch + 1))
+        torch.save(checkpoint, '{0}/{1}_{2}.pth'.format(SegNet_dir, SegNet_name, epoch + 1))
+        torch.save(checkpoint, '{0}/{1}_{2}.pth'.format(ClsNet_dir, ClsNet_name, epoch + 1))
 
-            SegNet_checkpoint = {'model': SegNet.state_dict(), 'optimizer': optimizer.state_dict()}
-            torch.save(SegNet_checkpoint, '{0}/{1}_{2}.pth'.format(SegNet_dir, SegNet_name, epoch + 1))
+        # 每个epoch结束后进行验证，记录score
+        current_score = validation(FENet, SegNet, ClsNet, args)
+        logging.info('Epoch {0}: current_score: {1:.4f}'.format(epoch + 1, current_score))
 
-            ClsNet_checkpoint = {'model': ClsNet.state_dict(), 'optimizer': optimizer.state_dict()}
-            torch.save(ClsNet_checkpoint, '{0}/{1}_{2}.pth'.format(ClsNet_dir, ClsNet_name, epoch + 1))
+        # 如果当前score更高，则保存最优模型
+        if current_score >= previous_score:
+            torch.save(FENet.state_dict(), '{0}/{1}.pth'.format(FENet_dir, FENet_name))
+            torch.save(SegNet.state_dict(), '{0}/{1}.pth'.format(SegNet_dir, SegNet_name))
+            torch.save(ClsNet.state_dict(), '{0}/{1}.pth'.format(ClsNet_dir, ClsNet_name))
+            previous_score = current_score
 
-            current_score = validation(FENet, SegNet, ClsNet, args)
-            print('current_score: {0:.4f}'.format(current_score))
+        # 保存每个epoch的loss和score信息，用于绘制曲线
+        epoch_list.append(epoch + 1)
+        loss_list.append(loss.item())
+        score_list.append(current_score)
 
-            if current_score >= previous_score:
-                torch.save(FENet.state_dict(), '{0}/{1}.pth'.format(FENet_dir, FENet_name))
-                torch.save(SegNet.state_dict(), '{0}/{1}.pth'.format(SegNet_dir, SegNet_name))
-                torch.save(ClsNet.state_dict(), '{0}/{1}.pth'.format(ClsNet_dir, ClsNet_name))
-                previous_score = current_score
+    logging.info("Training finished.")
 
 def validation(FENet, SegNet, ClsNet, args):
     val_data_loader = DataLoader(ValData(args), batch_size=args['val_bs'], shuffle=False, num_workers=8)
-
-    pred_soft_ncls = []
-    ncls = []
-    seg_correct, seg_total, cls_correct, cls_total = [0] * 4
+    seg_correct, seg_total, cls_correct, cls_total = 0, 0, 0, 0
 
     for batch_id, val_data in enumerate(val_data_loader):
         image, mask, cls, name = val_data
-
         image = image.to(device)
         mask = mask.to(device)
         cls[cls != 0] = 1
@@ -286,9 +295,6 @@ def validation(FENet, SegNet, ClsNet, args):
 
         sm = nn.Softmax(dim=1)
         pred_logit = sm(pred_logit)
-        pred_soft_ncls.extend(pred_logit[:, 1])
-        ncls.extend(cls)
-
         _, binary_cls = torch.max(pred_logit, 1)
         cls_correct += (binary_cls == cls).sum().item()
         cls_total += int(torch.ones_like(cls).sum().item())
