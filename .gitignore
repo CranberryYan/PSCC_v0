@@ -4,3 +4,4 @@ dataset_generation/
 mask_results/
 sample/
 SE/
+training.log
