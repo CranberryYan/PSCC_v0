@@ -4,3 +4,8 @@ dataset_generation/
 mask_results/
 sample/
 *.log
+log/
+bad_cases/
+*.txt
+*.png
+*.jpg
