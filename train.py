@@ -1,9 +1,11 @@
 import os
+import logging
+import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import logging
 
 from utils.utils import findLastCheckpoint, save_image, adjust_learning_rate
 from utils.config import get_pscc_args
@@ -13,41 +15,35 @@ from models.seg_hrnet_config import get_hrnet_cfg
 from models.NLCDetection import NLCDetection
 from models.detection_head import DetectionHead
 
-# 使用所有可用的GPU
+# TODO: MoE不适用于多卡训练, 会有Bug
 # device_ids = list(range(torch.cuda.device_count()))
-device_ids = [1]
-device = torch.device('cuda:1')
+device_ids = [0]
+device = torch.device('cuda:0')
 
-# 设置日志记录
 logging.basicConfig(filename='training.log', level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 def train(args):
-    # define backbone
     FENet_name = 'HRNet'
     FENet_cfg = get_hrnet_cfg()
     FENet = get_seg_model(FENet_cfg)
 
-    # define localization head
     SegNet_name = 'NLCDetection'
     SegNet = NLCDetection(args)
 
-    # define detection head
     ClsNet_name = 'DetectionHead'
     ClsNet = DetectionHead(args)
 
-    # load train data
     train_data_loader = DataLoader(
         TrainData(args),
         batch_size=args['train_bs'],
         shuffle=True, num_workers=8)
 
-    # 将模型移至GPU
     FENet = FENet.to(device)
     SegNet = SegNet.to(device)
     ClsNet = ClsNet.to(device)
 
-    # 使用DataParallel包装模型，多卡并行
+    # 多卡并行
     FENet = nn.DataParallel(FENet, device_ids=device_ids)
     SegNet = nn.DataParallel(SegNet, device_ids=device_ids)
     ClsNet = nn.DataParallel(ClsNet, device_ids=device_ids)
@@ -55,7 +51,6 @@ def train(args):
     params = list(FENet.parameters()) + list(SegNet.parameters()) + list(ClsNet.parameters())
     optimizer = torch.optim.Adam(params, lr=args['learning_rate'])
 
-    # 创建checkpoint目录
     FENet_dir = './checkpoint/{}_checkpoint'.format(FENet_name)
     if not os.path.exists(FENet_dir):
         os.mkdir(FENet_dir)
@@ -66,7 +61,6 @@ def train(args):
     if not os.path.exists(ClsNet_dir):
         os.mkdir(ClsNet_dir)
 
-    # load pretrained weights if available
     try:
         FENet_weight_path = '{}/{}.pth'.format(FENet_dir, FENet_name)
         FENet_state_dict = torch.load(FENet_weight_path, map_location='cuda:0')
@@ -89,12 +83,10 @@ def train(args):
     except Exception as e:
         logging.info('{} weight-loading fails: {}'.format(ClsNet_name, e))
 
-    # 先进行一次验证，得到初始score
     logging.info('length of traindata: {}'.format(len(train_data_loader)))
     previous_score = validation(FENet, SegNet, ClsNet, args)
     logging.info('previous_score {0:.4f}'.format(previous_score))
 
-    # cross entropy loss（分类任务）
     authentic_ratio = args['train_ratio'][0]
     fake_ratio = 1 - authentic_ratio
     logging.info('authentic_ratio: {}  fake_ratio: {}'.format(authentic_ratio, fake_ratio))
@@ -102,8 +94,7 @@ def train(args):
     weights = torch.tensor(weights).to(device)
     CE_loss = nn.CrossEntropyLoss(weight=weights).to(device)
 
-    # BCE loss for segmentation
-    BCE_loss_full = nn.BCELoss(reduction='none').to(device)
+    BCE_loss_full = nn.BCEWithLogitsLoss(reduction='none').to(device)
 
     # 断点续训
     initial_epoch = findLastCheckpoint(save_dir=SegNet_dir)
@@ -126,10 +117,11 @@ def train(args):
             initial_epoch = 0
             logging.info("resuming by loading epoch {}".format(initial_epoch))
 
-    # 用于保存训练过程数据
     epoch_list = []
     loss_list = []
     score_list = []
+    diversity_history = []
+    routing_history = []
 
     for epoch in range(initial_epoch, args['num_epochs']):
         adjust_learning_rate(optimizer, epoch, args['lr_strategy'], args['lr_decay_step'])
@@ -142,7 +134,6 @@ def train(args):
             cls[cls != 0] = 1  # 只要不是origin, 不区分fake种类
             mask1, mask2, mask3, mask4 = masks
 
-            # median-frequency class weighting for segmentation masks
             mask1_balance = torch.ones_like(mask1)
             if (mask1 == 1).sum():
                 mask1_balance[mask1 == 1] = 0.5 / ((mask1 == 1).sum().float() / mask1.numel())
@@ -168,7 +159,6 @@ def train(args):
             else:
                 logging.info('Mask4 balance is not working!')
 
-            # 移动数据到GPU
             image = image.to(device)
             mask1, mask2, mask3, mask4 = mask1.to(device), mask2.to(device), mask3.to(device), mask4.to(device)
             mask1_balance = mask1_balance.to(device)
@@ -185,13 +175,41 @@ def train(args):
 
             # Segmentation network
             SegNet.train()
+            current_temp = max(0.5, 2.0 * (1 - epoch / 100))
+            SegNet.module.getmask4.temp = current_temp
+            SegNet.module.getmask3.temp = current_temp
+            SegNet.module.getmask2.temp = current_temp
+            SegNet.module.getmask1.temp = current_temp
             [pred_mask1, pred_mask2, pred_mask3, pred_mask4] = SegNet(feat)
+            div4 = SegNet.module.getmask4.get_diversity()
+            div3 = SegNet.module.getmask3.get_diversity()
+            div2 = SegNet.module.getmask2.get_diversity()
+            div1 = SegNet.module.getmask1.get_diversity()
+            diversity_history.append([div4, div3, div2, div1])
+            rout4 = SegNet.module.getmask4.get_routing_stats()
+            rout3 = SegNet.module.getmask3.get_routing_stats()
+            rout2 = SegNet.module.getmask2.get_routing_stats()
+            rout1 = SegNet.module.getmask1.get_routing_stats()
+            routing_history.append([rout4, rout3, rout2, rout1])
+            if batch_id % 10 == 9:
+                moe_log = []
+                for k, div, rout, temp in zip(
+                    ["getmask4", "getmask3", "getmask2", "getmask1"],
+                    [div4, div3, div2, div1],
+                    [rout4, rout3, rout2, rout1],
+                    [SegNet.module.getmask4.temp, SegNet.module.getmask3.temp,
+                     SegNet.module.getmask2.temp, SegNet.module.getmask1.temp]):
+                    moe_log.append(f"{k}:temp={temp:.4f}, div={div:.4f}, route={np.round(rout, 3)}")
+                moe_log_str = " | ".join(moe_log)
+
+                logging.info(
+                    '[Epoch {0}, Batch {1}] MoE: {2}'
+                    .format(epoch + 1, batch_id + 1, moe_log_str))
 
             # Classification network
             ClsNet.train()
             pred_logit = ClsNet(feat)
 
-            # squeeze channel dimension
             pred_mask1 = pred_mask1.squeeze(dim=1)
             pred_mask2 = pred_mask2.squeeze(dim=1)
             pred_mask3 = pred_mask3.squeeze(dim=1)
@@ -234,7 +252,6 @@ def train(args):
                                 cls_loss_sum / 10))
                 seg_total, seg_correct, seg_loss_sum, cls_total, cls_correct, cls_loss_sum = 0, 0, 0, 0, 0, 0
 
-        # 每个epoch保存一次权重
         checkpoint = {
             'epoch': epoch + 1,
             'FENet': FENet.state_dict(),
@@ -246,23 +263,38 @@ def train(args):
         torch.save(checkpoint, '{0}/{1}_{2}.pth'.format(SegNet_dir, SegNet_name, epoch + 1))
         torch.save(checkpoint, '{0}/{1}_{2}.pth'.format(ClsNet_dir, ClsNet_name, epoch + 1))
 
-        # 每个epoch结束后进行验证，记录score
         current_score = validation(FENet, SegNet, ClsNet, args)
         logging.info('Epoch {0}: current_score: {1:.4f}'.format(epoch + 1, current_score))
 
-        # 如果当前score更高，则保存最优模型
         if current_score >= previous_score:
             torch.save(FENet.state_dict(), '{0}/{1}.pth'.format(FENet_dir, FENet_name))
             torch.save(SegNet.state_dict(), '{0}/{1}.pth'.format(SegNet_dir, SegNet_name))
             torch.save(ClsNet.state_dict(), '{0}/{1}.pth'.format(ClsNet_dir, ClsNet_name))
             previous_score = current_score
 
-        # 保存每个epoch的loss和score信息，用于绘制曲线
         epoch_list.append(epoch + 1)
         loss_list.append(loss.item())
         score_list.append(current_score)
 
     logging.info("Training finished.")
+    div_arr = np.array(diversity_history)  # shape: [steps, 4]
+    for i, name in enumerate(["getmask4", "getmask3", "getmask2", "getmask1"]):
+        plt.plot(div_arr[:, i], label=name)
+    plt.legend()
+    plt.title("Expert Diversity (Variance) at Different Scales")
+    plt.xlabel("Iteration")
+    plt.ylabel("Variance")
+    plt.grid()
+    plt.show()
+
+    routing_arr = np.array(routing_history)  # shape: [steps, 4, num_experts]
+    for i, name in enumerate(["getmask4", "getmask3", "getmask2", "getmask1"]):
+        plt.bar(np.arange(routing_arr.shape[2]), routing_arr[-1, i, :], alpha=0.7, label=name)
+    plt.legend()
+    plt.title("Routing Distribution (last step)")
+    plt.xlabel("Expert ID")
+    plt.ylabel("Mean Routing")
+    plt.show()
 
 def validation(FENet, SegNet, ClsNet, args):
     val_data_loader = DataLoader(ValData(args), batch_size=args['val_bs'], shuffle=False, num_workers=8)

@@ -97,16 +97,16 @@ def plot_and_save(x, y, title, ylabel, filename, window=20, x_range=None, y_rang
 # 示例调用
 plot_and_save(global_patches, loc_accuracies, 
 			'Localization Accuracy Over Training', 'Accuracy (%)', 'loc_accuracy.png',
-			window=20, x_range=(0, 25000), y_range=(0, 100))
+			window=20, x_range=(0, 17500), y_range=(0, 100))
 
 plot_and_save(global_patches, seg_losses, 
 			'Segmentation Loss Over Training', 'Loss', 'seg_loss.png',
-			window=20, x_range=(0, 25000), y_range=(0, 3.5))
+			window=20, x_range=(0, 17500), y_range=(0, 3.5))
 
 plot_and_save(global_patches, cls_accuracies, 
 		'Classification Accuracy Over Training', 'Accuracy (%)', 'cls_accuracy.png',
-		window=20, x_range=(0, 25000), y_range=(0, 100))
+		window=20, x_range=(0, 17500), y_range=(0, 100))
 
 plot_and_save(global_patches, cls_losses, 
 		'Classification Loss Over Training', 'Loss', 'cls_loss.png',
-		window=20, x_range=(0, 25000), y_range=(0, 3.5))
+		window=20, x_range=(0, 17500), y_range=(0, 1.5))

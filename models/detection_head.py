@@ -150,7 +150,7 @@ class DetectionHead(nn.Module):
     N, C, H, W = y.shape
     y = y.permute(0, 2, 3, 1)
     y = y.view(y.size(0), -1, y.size(3))
-    # y = self.HiLo_attn(y, H, W)
+    y = self.HiLo_attn(y, H, W)
     y = y.permute(0, 2, 1)
     y = y.view(N, C, H, W)
     # average and flatten

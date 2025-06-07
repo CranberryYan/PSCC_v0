@@ -112,7 +112,7 @@ class TrainData(data.Dataset):
 
         # inpainting
         inpainting_names = []
-        inpainting_path = join(path, 'splice_randmask')
+        inpainting_path = join(path, 'removal')
 
         with open(join(inpainting_path, 'fake.txt')) as f:
             contents = f.readlines()
@@ -309,7 +309,7 @@ class ValData(data.Dataset):
 
         # inpainting
         inpainting_names = []
-        inpainting_path = join(path, 'splice_randmask')
+        inpainting_path = join(path, 'removal')
 
         with open(join(inpainting_path, 'fake.txt')) as f:
             contents = f.readlines()

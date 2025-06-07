@@ -37,10 +37,11 @@ def test(args):
   ClsNet_name = 'DetectionHead'
   ClsNet = DetectionHead(args)
 
-  FENet_checkpoint_dir = './checkpoint/{}_checkpoint'.format(FENet_name)
-  SegNet_checkpoint_dir = './checkpoint/{}_checkpoint'.format(SegNet_name)
-  ClsNet_checkpoint_dir = './checkpoint/{}_checkpoint'.format(ClsNet_name)
+  model_name = "Biformer+HiLo"
 
+  FENet_checkpoint_dir = f'./checkpoint/{model_name}/{FENet_name}_checkpoint'
+  SegNet_checkpoint_dir = f'./checkpoint/{model_name}/{SegNet_name}_checkpoint'
+  ClsNet_checkpoint_dir = f'./checkpoint/{model_name}/{ClsNet_name}_checkpoint'
   # load FENet weight
   FENet = FENet.to(device)
   FENet = nn.DataParallel(FENet, device_ids=device_ids)
@@ -59,6 +60,7 @@ def test(args):
   test_data_loader = DataLoader(TestData(args), batch_size=1, shuffle=False,
                                 num_workers=8)
 
+  authentic_num = 0
   for batch_id, test_data in enumerate(test_data_loader):
     image, cls, name = test_data
     image = image.to(device)
@@ -85,13 +87,15 @@ def test(args):
     _, binary_cls = torch.max(pred_logit, 1)
 
     pred_tag = 'forged' if binary_cls.item() == 1 else 'authentic'
+    if (pred_tag == 'authentic'):
+      authentic_num += 1
 
     save_image(pred_mask, name, 'mask')
 
     print_name = name[0].split('/')[-1].split('.')[0]
 
     print(f'The image {print_name} is {pred_tag}')
-
+  print(f'The num of authentic is {authentic_num}')
 
 if __name__ == '__main__':
   args = get_pscc_args()
