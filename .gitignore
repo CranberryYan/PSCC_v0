@@ -9,3 +9,6 @@ bad_cases/
 *.txt
 *.png
 *.jpg
+*.pyc
+*.yml
+total=15000_epoch=100_batch=6_with_MoE=True(CBAM_K=8)_With_HiLo=True/

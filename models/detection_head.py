@@ -4,158 +4,200 @@ from models.seg_hrnet_config import get_hrnet_cfg
 from models.attention.HiLo import HiLo
 
 BN_MOMENTUM = 0.01
+
+
 class Bottleneck(nn.Module):
-  expansion = 2
+    expansion = 2
 
-  def __init__(self, inplanes, planes, stride=1, downsample=None):
-    super(Bottleneck, self).__init__()
-    self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-    self.bn1 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
-    self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                            padding=1, bias=False)
-    self.bn2 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
-    self.conv3 = nn.Conv2d(planes, planes * self.expansion, kernel_size=1,
-                            bias=False)
-    self.bn3 = nn.BatchNorm2d(planes * self.expansion,
-                            momentum=BN_MOMENTUM)
-    self.relu = nn.ReLU(inplace=True)
-    self.downsample = downsample
-    self.stride = stride
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super().__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
+        self.conv2 = nn.Conv2d(
+            planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
+        )
+        self.bn2 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
+        self.conv3 = nn.Conv2d(
+            planes, planes * self.expansion, kernel_size=1, bias=False
+        )
+        self.bn3 = nn.BatchNorm2d(
+            planes * self.expansion, momentum=BN_MOMENTUM
+        )
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
 
-  def forward(self, x):
-    residual = x
+    def forward(self, x):
+        residual = x
 
-    out = self.conv1(x)
-    out = self.bn1(out)
-    out = self.relu(out)
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
 
-    out = self.conv2(out)
-    out = self.bn2(out)
-    out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
 
-    out = self.conv3(out)
-    out = self.bn3(out)
+        out = self.conv3(out)
+        out = self.bn3(out)
 
-    if self.downsample is not None:
-      residual = self.downsample(x)
+        if self.downsample is not None:
+            residual = self.downsample(x)
 
-    out += residual
-    out = self.relu(out)
+        out = out + residual
+        out = self.relu(out)
 
-    return out
+        return out
 
 
 class DetectionHead(nn.Module):
-  def __init__(self, args):
-    super(DetectionHead, self).__init__()
-    self.crop_size = args['crop_size']
+    def __init__(self, args):
+        super().__init__()
+        self.crop_size = args["crop_size"]
+        self.use_hilo = True
 
-    FENet_cfg = get_hrnet_cfg()
-    pre_stage_channels = FENet_cfg['STAGE4']['NUM_CHANNELS']
+        FENet_cfg = get_hrnet_cfg()
+        pre_stage_channels = FENet_cfg["STAGE4"]["NUM_CHANNELS"]
 
-    # classification head
-    self.incre_modules, self.downsamp_modules, \
-      self.final_layer = self._make_head(pre_stage_channels)
+        # HRNet-style classification head
+        self.incre_modules, self.downsamp_modules, self.final_layer = \
+            self._make_head(pre_stage_channels)
 
-    # HiLo
-    self.HiLo_attn = HiLo(dim=128)
+        # HiLo attention on final 128-d feature map
+        if self.use_hilo:
+            self.HiLo_attn = HiLo(dim=128)
+        else:
+            self.HiLo_attn = None
 
-    self.classifier = nn.Sequential(
-      nn.Linear(128, 16),
-      nn.ReLU(inplace=True),
-      nn.Linear(16, 2)
-    )
+        self.classifier = nn.Sequential(
+            nn.Linear(128, 16),
+            nn.ReLU(inplace=True),
+            nn.Linear(16, 2),
+        )
 
-  def _make_layer(self, block, inplanes, planes, blocks, stride=1):
-    downsample = None
-    if stride != 1 or inplanes != planes * block.expansion:
-      downsample = nn.Sequential(
-        nn.Conv2d(inplanes, planes * block.expansion,
-          kernel_size=1, stride=stride, bias=False),
-        nn.BatchNorm2d(planes * block.expansion, momentum=BN_MOMENTUM),
-      )
+    def _make_layer(self, block, inplanes, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(
+                    inplanes,
+                    planes * block.expansion,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False
+                ),
+                nn.BatchNorm2d(
+                    planes * block.expansion, momentum=BN_MOMENTUM
+                ),
+            )
 
-    layers = []
-    layers.append(block(inplanes, planes, stride, downsample))
-    inplanes = planes * block.expansion
-    for i in range(1, blocks):
-      layers.append(block(inplanes, planes))
+        layers = [block(inplanes, planes, stride, downsample)]
+        inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(inplanes, planes))
 
-    return nn.Sequential(*layers)
+        return nn.Sequential(*layers)
 
-  def _make_head(self, pre_stage_channels):
-    head_block = Bottleneck
-    head_channels = pre_stage_channels
+    def _make_head(self, pre_stage_channels):
+        head_block = Bottleneck
+        head_channels = pre_stage_channels
 
-    incre_modules = []
-    for i, channels in enumerate(pre_stage_channels):
-      incre_module = self._make_layer(head_block,
-                                      channels,
-                                      head_channels[i],
-                                      1,
-                                      stride=1)
-      incre_modules.append(incre_module)
-    incre_modules = nn.ModuleList(incre_modules)
+        incre_modules = []
+        for i, channels in enumerate(pre_stage_channels):
+            incre_module = self._make_layer(
+                head_block,
+                inplanes=channels,
+                planes=head_channels[i],
+                blocks=1,
+                stride=1
+            )
+            incre_modules.append(incre_module)
+        incre_modules = nn.ModuleList(incre_modules)
 
-    # downsampling modules
-    downsamp_modules = []
-    for i in range(len(pre_stage_channels) - 1):
-      in_channels = head_channels[i] * head_block.expansion
-      out_channels = head_channels[i + 1] * head_block.expansion
+        downsamp_modules = []
+        for i in range(len(pre_stage_channels) - 1):
+            in_channels = head_channels[i] * head_block.expansion
+            out_channels = head_channels[i + 1] * head_block.expansion
 
-      downsamp_module = nn.Sequential(
-          nn.Conv2d(in_channels=in_channels,
+            downsamp_module = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=in_channels,
                     out_channels=out_channels,
                     kernel_size=3,
                     stride=2,
-                    padding=1),
-          nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM),
-          nn.ReLU(inplace=True)
-      )
+                    padding=1
+                ),
+                nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM),
+                nn.ReLU(inplace=True),
+            )
+            downsamp_modules.append(downsamp_module)
+        downsamp_modules = nn.ModuleList(downsamp_modules)
 
-      downsamp_modules.append(downsamp_module)
-    downsamp_modules = nn.ModuleList(downsamp_modules)
-
-    final_layer = nn.Sequential(
-      nn.Conv2d(in_channels=head_channels[3] * head_block.expansion,
+        final_layer = nn.Sequential(
+            nn.Conv2d(
+                in_channels=head_channels[3] * head_block.expansion,
                 out_channels=128,
                 kernel_size=1,
                 stride=1,
-                padding=0),
-      nn.BatchNorm2d(128, momentum=BN_MOMENTUM),
-      nn.ReLU(inplace=True)
-    )
+                padding=0
+            ),
+            nn.BatchNorm2d(128, momentum=BN_MOMENTUM),
+            nn.ReLU(inplace=True),
+        )
 
-    return incre_modules, downsamp_modules, final_layer
+        return incre_modules, downsamp_modules, final_layer
 
-  def forward(self, feat):
-    s1, s2, s3, s4 = feat
+    def forward(self, feat):
+        s1, s2, s3, s4 = feat
 
-    if s1.shape[2:] == self.crop_size:
-      pass
-    else:
-      s1 = F.interpolate(s1, size=self.crop_size, mode='bilinear', align_corners=True)
-      s2 = F.interpolate(s2, size=[i // 2 for i in self.crop_size], mode='bilinear', align_corners=True)
-      s3 = F.interpolate(s3, size=[i // 4 for i in self.crop_size], mode='bilinear', align_corners=True)
-      s4 = F.interpolate(s4, size=[i // 8 for i in self.crop_size], mode='bilinear', align_corners=True)
+        # 对齐空间尺寸（和 NLCDetection 中保持一致）
+        if s1.shape[2:] != self.crop_size:
+            s1 = F.interpolate(s1, size=self.crop_size,
+                               mode="bilinear", align_corners=True)
+            s2 = F.interpolate(
+                s2,
+                size=[i // 2 for i in self.crop_size],
+                mode="bilinear",
+                align_corners=True
+            )
+            s3 = F.interpolate(
+                s3,
+                size=[i // 4 for i in self.crop_size],
+                mode="bilinear",
+                align_corners=True
+            )
+            s4 = F.interpolate(
+                s4,
+                size=[i // 8 for i in self.crop_size],
+                mode="bilinear",
+                align_corners=True
+            )
 
-    y_list = [s1, s2, s3, s4]
+        y_list = [s1, s2, s3, s4]
 
-    y = self.incre_modules[0](y_list[0])
-    for i in range(len(self.downsamp_modules)):
-      y = self.incre_modules[i+1](y_list[i+1]) + \
-                  self.downsamp_modules[i](y)
+        y = self.incre_modules[0](y_list[0])
+        for i in range(len(self.downsamp_modules)):
+            y = (
+                self.incre_modules[i + 1](y_list[i + 1])
+                + self.downsamp_modules[i](y)
+            )
 
-    y = self.final_layer(y)
-    N, C, H, W = y.shape
-    y = y.permute(0, 2, 3, 1)
-    y = y.view(y.size(0), -1, y.size(3))
-    y = self.HiLo_attn(y, H, W)
-    y = y.permute(0, 2, 1)
-    y = y.view(N, C, H, W)
-    # average and flatten
-    y = F.avg_pool2d(y, kernel_size=y.size()[2:]).view(y.size(0), -1)
+        y = self.final_layer(y)  # [N, 128, H, W]
 
-    logit = self.classifier(y)
+        if self.use_hilo and self.HiLo_attn is not None:
+            N, C, H, W = y.shape
+            # [N, C, H, W] -> [N, H*W, C]
+            y_flat = y.permute(0, 2, 3, 1).contiguous().view(N, H * W, C)
+            y_flat = self.HiLo_attn(y_flat, H, W)
+            # [N, H*W, C] -> [N, C, H, W]
+            y = (
+                y_flat.permute(0, 2, 1)
+                .contiguous()
+                .view(N, C, H, W)
+            )
 
-    return logit
+        # Global Average Pooling + classifier
+        y = F.adaptive_avg_pool2d(y, output_size=1).view(y.size(0), -1)
+        logit = self.classifier(y)
+
+        return logit
