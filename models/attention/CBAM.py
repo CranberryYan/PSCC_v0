@@ -57,9 +57,8 @@ class CBAM(nn.Module):
     result = out * self.sa(out)
     # get mask
     mask = torch.sigmoid(self.getmask(result.clone()))
-    
-    return mask, result
 
+    return mask, result
 
 if __name__ == '__main__':
   print('testing ChannelAttention'.center(100,'-'))
@@ -70,8 +69,6 @@ if __name__ == '__main__':
   print(data_in.shape)  # torch.Size([8, 32, 300, 300])
   print(data_out.shape)  # torch.Size([8, 32, 1, 1])
 
-
-
 if __name__ == '__main__':
   print('testing SpatialAttention'.center(100,'-'))
   torch.manual_seed(seed=20200910)
@@ -80,7 +77,6 @@ if __name__ == '__main__':
   data_out = SA(data_in)
   print(data_in.shape)  # torch.Size([8, 32, 300, 300])
   print(data_out.shape)  # torch.Size([8, 1, 300, 300])
-
 
 if __name__ == '__main__':
   print('testing CBAM'.center(100,'-'))
