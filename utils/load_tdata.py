@@ -98,7 +98,6 @@ class TrainData(data.Dataset):
             for content in contents:
                 splice_randmask.append(join(splice_randmask_path, content.strip()))
 
-
         splice_names = splice_names + splice_randmask
 
         # copymove
@@ -110,16 +109,15 @@ class TrainData(data.Dataset):
             for content in contents[val_num:]:
                 copymove_names.append(join(copymove_path, content.strip()))
 
-        # inpainting
-        inpainting_names = []
-        inpainting_path = join(path, 'removal')
+        # removal
+        removal_names = []
+        removal_path = join(path, 'removal')
 
-        with open(join(inpainting_path, 'fake.txt')) as f:
+        with open(join(removal_path, 'fake.txt')) as f:
             contents = f.readlines()
             for content in contents[val_num:]:
-                inpainting_names.append(join(inpainting_path, content.strip()))
-
-        self.image_names = [authentic_names, splice_names, copymove_names, inpainting_names]
+                removal_names.append(join(removal_path, content.strip()))
+        self.image_names = [authentic_names, splice_names, copymove_names, removal_names]
         self.train_num = train_num
         self.train_ratio = train_ratio
         self.crop_size = crop_size
@@ -225,7 +223,7 @@ class TrainData(data.Dataset):
                 mask = mask.resize((crop_height, crop_width), resample=Image.BICUBIC)
                 mask = np.asarray(mask)
 
-        # inpainting
+        # removal
         elif cls == 3:
             if '.tif' in image_name:
                 mask = imageio.imread(image_name.replace('fake', 'mask').replace('.tif', '.png'))
@@ -307,19 +305,19 @@ class ValData(data.Dataset):
 
         copymove_cls = [2] * val_num
 
-        # inpainting
-        inpainting_names = []
-        inpainting_path = join(path, 'removal')
+        # removal
+        removal_names = []
+        removal_path = join(path, 'removal')
 
-        with open(join(inpainting_path, 'fake.txt')) as f:
+        with open(join(removal_path, 'fake.txt')) as f:
             contents = f.readlines()
             for content in contents[:val_num]:
-                inpainting_names.append(join(inpainting_path, content.strip()))
+                removal_names.append(join(removal_path, content.strip()))
 
-        inpainting_cls = [3] * val_num
+        removal_cls = [3] * val_num
 
-        self.image_names = authentic_names + splice_names + copymove_names + inpainting_names
-        self.image_class = authentic_cls + splice_cls + copymove_cls + inpainting_cls
+        self.image_names = authentic_names + splice_names + copymove_names + removal_names
+        self.image_class = authentic_cls + splice_cls + copymove_cls + removal_cls
 
     def get_item(self, index):
         image_name = self.image_names[index]
@@ -354,7 +352,7 @@ class ValData(data.Dataset):
             mask = imageio.imread(image_name.replace('fake', 'mask'))
             mask = torch.from_numpy(mask.astype(np.float32) / 255)
 
-        # inpainting
+        # removal
         elif cls == 3:
             if '.tif' in image_name:
                 mask = imageio.imread(image_name.replace('fake', 'mask').replace('.tif', '.png'))

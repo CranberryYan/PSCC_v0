@@ -1,3 +1,4 @@
+from email.policy import strict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,11 +18,17 @@ device_ids = [Id for Id in range(torch.cuda.device_count())]
 device = torch.device('cuda:0')
 
 
-def load_network_weight(net, checkpoint_dir, name):
-  weight_path = '{}/{}.pth'.format(checkpoint_dir, name)
-  net_state_dict = torch.load(weight_path, map_location='cuda:0')
-  net.load_state_dict(net_state_dict)
-  print('{} weight-loading succeeds'.format(name))
+# def load_network_weight(net, checkpoint_dir, name):
+#   weight_path = '{}/{}_99.pth'.format(checkpoint_dir, name)
+#   net_state_dict = torch.load(weight_path, map_location='cuda:0')
+#   net.load_state_dict(net_state_dict)
+#   print('{} weight-loading succeeds'.format(name))
+
+def load_network_weight(net, checkpoint_path, net_key):
+    checkpoint = torch.load(checkpoint_path, map_location='cuda:0')
+    print("Available keys in checkpoint:", checkpoint.keys())
+    net_state_dict = checkpoint[net_key]
+    net.load_state_dict(net_state_dict)
 
 def test(args):
   # define backbone
@@ -37,25 +44,25 @@ def test(args):
   ClsNet_name = 'DetectionHead'
   ClsNet = DetectionHead(args)
 
-  model_name = "Biformer+HiLo"
+  model_name = "MoE_E8+HiLo"
 
-  FENet_checkpoint_dir = f'./checkpoint/{model_name}/{FENet_name}_checkpoint'
-  SegNet_checkpoint_dir = f'./checkpoint/{model_name}/{SegNet_name}_checkpoint'
-  ClsNet_checkpoint_dir = f'./checkpoint/{model_name}/{ClsNet_name}_checkpoint'
+  FENet_checkpoint_dir = f'./checkpoint/{model_name}/{FENet_name}_checkpoint/HRNet_best.pth'
+  SegNet_checkpoint_dir = f'./checkpoint/{model_name}/{SegNet_name}_checkpoint/NLCDetection_best.pth'
+  ClsNet_checkpoint_dir = f'./checkpoint/{model_name}/{ClsNet_name}_checkpoint/DetectionHead_best.pth'
   # load FENet weight
   FENet = FENet.to(device)
   FENet = nn.DataParallel(FENet, device_ids=device_ids)
-  load_network_weight(FENet, FENet_checkpoint_dir, FENet_name)
+  load_network_weight(FENet, FENet_checkpoint_dir, 'FENet')
 
   # load SegNet weight
   SegNet = SegNet.to(device)
   SegNet = nn.DataParallel(SegNet, device_ids=device_ids)
-  load_network_weight(SegNet, SegNet_checkpoint_dir, SegNet_name)
+  load_network_weight(SegNet, SegNet_checkpoint_dir, 'SegNet')
 
   # load ClsNet weight
   ClsNet = ClsNet.to(device)
   ClsNet = nn.DataParallel(ClsNet, device_ids=device_ids)
-  load_network_weight(ClsNet, ClsNet_checkpoint_dir, ClsNet_name)
+  load_network_weight(ClsNet, ClsNet_checkpoint_dir, 'ClsNet')
 
   test_data_loader = DataLoader(TestData(args), batch_size=1, shuffle=False,
                                 num_workers=8)

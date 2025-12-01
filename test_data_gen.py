@@ -2,20 +2,23 @@ import os
 import random
 
 # 数据集路径
-dataset_path = "/media/yst/Elements SE/datasets/PSCC/Training Dataset/"
-dataset_names = ['copymove', 'splice']
+# /mnt/e/datasets/PSCC/Training Dataset/copymove/fake/97008.png
+dataset_path = "/mnt/e/datasets/PSCC/Training Dataset/"
+dataset_names = ['copymove', 'splice', 'splice_randmask', 'removal']
 folder = "fake"
-sample_num = 100
+sample_num = 500
 
 # 支持的图片后缀
-img_exts = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+img_exts = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')
 
 # 存储采样结果
 sampled_files = []
 for dataset_name in dataset_names:
     folder_path = os.path.join(dataset_path, dataset_name, folder)
+    print(f"Processing folder: {folder_path}")
     # 列出该文件夹下所有图片文件
     all_files = [f for f in os.listdir(folder_path) if f.lower().endswith(img_exts)]
+    print(f"Found {len(all_files)} images in {folder_path}")
     
     # 随机采样，若不足sample_num则采全部
     sampled = random.sample(all_files, min(sample_num, len(all_files)))
